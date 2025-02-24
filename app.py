@@ -24,6 +24,8 @@ import re
 from pathlib import Path
 import threading
 import queue
+from datetime import datetime
+import time
 MAX_IMAGES = 150
 
 with open('models.yaml', 'r') as file:
@@ -576,6 +578,15 @@ def start_training_process(
     train_config,
     sample_prompts,
 ):
+    # Create required directories
+    if not os.path.exists("models"):
+        os.makedirs("models", exist_ok=True)
+    if not os.path.exists("outputs"):
+        os.makedirs("outputs", exist_ok=True)
+
+    # Download required model files
+    download(base_model)
+    
     # Create a unique training ID
     training_id = str(uuid.uuid4())
     output_name = slugify(lora_name)
@@ -584,6 +595,11 @@ def start_training_process(
     training_dir = Path(f"outputs/{output_name}/training_{training_id}")
     training_dir.mkdir(parents=True, exist_ok=True)
     
+    # Save sample prompts
+    sample_prompts_path = training_dir / "sample_prompts.txt" 
+    with open(sample_prompts_path, 'w', encoding='utf-8') as f:
+        f.write(sample_prompts)
+
     script_path = training_dir / f"train.{'bat' if sys.platform == 'win32' else 'sh'}"
     config_path = training_dir / "dataset.toml"
     
@@ -598,7 +614,7 @@ def start_training_process(
 
     # Create a log file
     log_file = training_dir / "training.log"
-    
+
     # Start the training process
     if sys.platform == "win32":
         process = subprocess.Popen(
@@ -619,6 +635,10 @@ def start_training_process(
             env=dict(os.environ, PYTHONIOENCODING='utf-8', LOG_LEVEL='DEBUG')
         )
 
+    # Save process ID
+    with open(training_dir / "pid", "w") as f:
+        f.write(str(process.pid))
+
     # Create a thread to handle logging
     def log_output():
         with open(log_file, 'w', encoding='utf-8') as f:
@@ -637,7 +657,7 @@ def start_training_process(
         else:
             yield f"Training process exited with code {rc}"
 
-    return log_output(), log_file
+    return log_output(), log_file, training_id
 
 def start_training(
     base_model,
@@ -648,7 +668,7 @@ def start_training(
 ):
     try:
         # Start the training process and get the log generator
-        log_generator, log_file = start_training_process(
+        log_generator, log_file, training_id = start_training_process(
             base_model,
             lora_name,
             train_script,
@@ -660,8 +680,27 @@ def start_training(
         for log in log_generator:
             yield log
             
+        # Generate Readme after training completes
+        output_name = slugify(lora_name)
+        config = toml.loads(train_config)
+        concept_sentence = config['datasets'][0]['subsets'][0]['class_tokens']
+        
+        # Read sample prompts from the saved file
+        sample_prompts_path = Path(f"outputs/{output_name}/training_{training_id}/sample_prompts.txt")
+        with open(sample_prompts_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        sample_prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
+        
+        # Generate and save README
+        md = readme(base_model, lora_name, concept_sentence, sample_prompts)
+        readme_path = Path(f"outputs/{output_name}/README.md")
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(md)
+
+        yield "Training Complete. Check the outputs folder for the LoRA files."
+            
     except Exception as e:
-        yield f"Error starting training: {str(e)}"
+        yield f"Error during training: {str(e)}"
 
 def update(
     base_model,
@@ -861,6 +900,26 @@ nav img.rotate { animation: rotate 2s linear infinite; }
 .codemirror-wrapper .cm-line { font-size: 12px !important; }
 label { font-weight: bold !important; }
 #start_training.clicked { background: silver; color: black; }
+
+/* Add these new styles */
+.log-container {
+    height: 400px !important;  /* Fixed height */
+    overflow-y: auto !important;  /* Enable vertical scrolling */
+    font-family: monospace;
+    white-space: pre;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.log-container .wrap {
+    height: 100% !important;
+}
+
+.log-container textarea {
+    height: 100% !important;
+    max-height: none !important;
+    overflow-y: auto !important;
+}
 """
 
 js = """
@@ -914,7 +973,51 @@ function() {
 current_account = account_hf()
 print(f"current_account={current_account}")
 
+def auto_refresh_details(training_id):
+    """Auto refresh logs and samples for active training"""
+    if not training_id:
+        return None, None
+        
+    details = monitor_training(training_id)
+    if not details:
+        return None, None
+    
+    return "\n".join(details["logs"]), details["samples"]
+
+def stop_training(training_id):
+    """Stop a running training process"""
+    outputs_path = Path("outputs")
+    
+    # Find the training directory
+    training_dir = None
+    for lora_dir in outputs_path.iterdir():
+        if not lora_dir.is_dir():
+            continue
+        temp_dir = lora_dir / f"training_{training_id}"
+        if temp_dir.exists():
+            training_dir = temp_dir
+            break
+            
+    if not training_dir:
+        return "Training not found"
+        
+    pid_file = training_dir / "pid"
+    if not pid_file.exists():
+        return "Training process not found"
+        
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read())
+        # Try to terminate process
+        os.kill(pid, 15 if sys.platform != "win32" else 9)  # SIGTERM on Unix, SIGKILL on Windows
+        return "Training stopped successfully"
+    except (OSError, ValueError) as e:
+        return f"Error stopping training: {str(e)}"
+
 with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
+    # State for selected training
+    selected_training = gr.State()
+    
     with gr.Tabs() as tabs:
         with gr.TabItem("Gym"):
             output_components = []
@@ -1057,6 +1160,94 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
             hf_login.click(fn=login_hf, inputs=[hf_token], outputs=[hf_token, hf_login, hf_logout, repo_owner])
             hf_logout.click(fn=logout_hf, outputs=[hf_token, hf_login, hf_logout, repo_owner])
 
+        with gr.TabItem("Monitor"):
+            with gr.Row():
+                refresh_monitor = gr.Button("Refresh")
+                auto_refresh = gr.Checkbox(label="Auto Refresh", value=True)
+            with gr.Row():
+                trainings_table = gr.Dataframe(
+                    headers=["ID", "Name", "Status", "Progress", "Started"],
+                    interactive=False
+                )
+                stop_button = gr.Button("Stop Selected Training", variant="stop")
+            with gr.Row():
+                with gr.Column():
+                    training_logs = gr.Textbox(
+                        label="Training Logs",
+                        lines=10,
+                        max_lines=10,
+                        elem_classes=["log-container"],
+                        autoscroll=True,
+                        interactive=False
+                    )
+                with gr.Column():
+                    training_samples = gr.Gallery(
+                        label="Latest Samples",
+                        columns=3
+                    )
+                    
+            # Update monitoring data every 30 seconds
+            def update_monitor():
+                trainings = get_active_trainings()
+                data = [[t["id"], t["name"], t["status"], t["progress"], t["started"]] for t in trainings]
+                return data
+                
+            def show_training_details(evt: gr.SelectData):
+                training_id = evt.value[0]  # First column contains ID
+                return training_id, *auto_refresh_details(training_id)
+                
+            refresh_monitor.click(
+                fn=update_monitor,
+                outputs=[trainings_table]
+            )
+            
+            # Handle selection of training from table
+            trainings_table.select(
+                fn=show_training_details,
+                outputs=[selected_training, training_logs, training_samples]
+            )
+            
+            # Handle stop button click
+            def handle_stop():
+                if not selected_training.value:
+                    return "No training selected"
+                result = stop_training(selected_training.value)
+                # Refresh table after stopping
+                trainings = get_active_trainings()
+                data = [[t["id"], t["name"], t["status"], t["progress"], t["started"]] for t in trainings]
+                return result, data
+                
+            stop_button.click(
+                fn=handle_stop,
+                outputs=[gr.Text(visible=False), trainings_table]
+            )
+            
+            # Auto-refresh every 5 seconds if enabled
+            auto_refresh.change(
+                fn=lambda x: gr.update(interval=5 if x else 0), 
+                inputs=[auto_refresh],
+                outputs=gr.update(every=5)  # This updates the refresh interval
+            )
+            
+            # Auto-refresh function for selected training
+            def refresh_selected():
+                if not selected_training.value:
+                    return None, None
+                return auto_refresh_details(selected_training.value)
+            
+            demo.load(fn=update_monitor, outputs=[trainings_table])
+            
+            if auto_refresh.value:
+                gr.update(every=5, inputs=[], outputs=[training_logs, training_samples], _js="""
+                    function(){
+                        // Only scroll if already near bottom
+                        const textarea = document.querySelector('.log-container textarea');
+                        if (textarea && (textarea.scrollHeight - textarea.scrollTop - textarea.clientHeight < 50)) {
+                            textarea.scrollTop = textarea.scrollHeight;
+                        }
+                        return [];
+                    }
+                """)
 
     publish_tab.select(refresh_publish_tab, outputs=lora_rows)
     lora_rows.select(fn=set_repo, inputs=[lora_rows], outputs=[repo_name])
@@ -1134,6 +1325,195 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
     do_captioning.click(fn=run_captioning, inputs=[images, concept_sentence] + caption_list, outputs=caption_list)
     demo.load(fn=loaded, js=js, outputs=[hf_token, hf_login, hf_logout, repo_owner])
     refresh.click(update, inputs=listeners, outputs=[train_script, train_config, dataset_folder])
+
+def parse_training_progress(log_lines):
+    """Parse training progress from log lines"""
+    progress = {
+        "current_epoch": 0,
+        "total_epochs": 0,
+        "current_step": 0,
+        "total_steps": 0,
+        "loss": None,
+        "learning_rate": None
+    }
+    
+    for line in log_lines:
+        # Match epoch progress
+        epoch_match = re.search(r"Epoch (\d+)/(\d+)", line)
+        if epoch_match:
+            progress["current_epoch"] = int(epoch_match.group(1))
+            progress["total_epochs"] = int(epoch_match.group(2))
+            
+        # Match step progress
+        step_match = re.search(r"Step (\d+)/(\d+)", line)
+        if step_match:
+            progress["current_step"] = int(step_match.group(1))
+            progress["total_steps"] = int(step_match.group(2))
+            
+        # Match loss
+        loss_match = re.search(r"loss: ([\d.]+)", line)
+        if loss_match:
+            progress["loss"] = float(loss_match.group(1))
+            
+        # Match learning rate
+        lr_match = re.search(r"lr: ([\d.e-]+)", line)
+        if lr_match:
+            progress["learning_rate"] = float(lr_match.group(1))
+    
+    return progress
+
+def cleanup_terminated_processes():
+    """Clean up PID files for terminated processes"""
+    outputs_path = Path("outputs")
+    
+    if not outputs_path.exists():
+        return
+        
+    for lora_dir in outputs_path.iterdir():
+        if not lora_dir.is_dir() or lora_dir.name == "sample":
+            continue
+            
+        for training_dir in lora_dir.glob("training_*"):
+            pid_file = training_dir / "pid"
+            if pid_file.exists():
+                try:
+                    with open(pid_file) as f:
+                        pid = int(f.read())
+                    # Check if process is running
+                    os.kill(pid, 0)
+                except OSError:
+                    # Process not running, clean up PID file
+                    try:
+                        pid_file.unlink()
+                    except:
+                        pass
+
+def get_active_trainings():
+    """Get list of all active training sessions"""
+    # First clean up any terminated processes
+    cleanup_terminated_processes()
+    
+    active_trainings = []
+    outputs_path = Path("outputs")
+    
+    if not outputs_path.exists():
+        return []
+        
+    for lora_dir in outputs_path.iterdir():
+        if not lora_dir.is_dir() or lora_dir.name == "sample":
+            continue
+            
+        # Check each training_* directory
+        for training_dir in lora_dir.glob("training_*"):
+            try:
+                log_file = training_dir / "training.log"
+                script_file = training_dir / f"train.{'bat' if sys.platform == 'win32' else 'sh'}"
+                
+                if not (log_file.exists() and script_file.exists()):
+                    continue
+                    
+                # Check if process is still running
+                pid_file = training_dir / "pid"
+                is_active = False
+                if pid_file.exists():
+                    try:
+                        with open(pid_file) as f:
+                            pid = int(f.read())
+                        # Check if process is running
+                        os.kill(pid, 0)
+                        is_active = True
+                    except (OSError, ValueError):
+                        is_active = False
+                
+                # Get latest log lines
+                try:
+                    with open(log_file, "r", encoding='utf-8') as f:
+                        latest_logs = f.readlines()[-10:]  # Last 10 lines
+                        # Get all logs for progress parsing
+                        f.seek(0)
+                        all_logs = f.readlines()
+                except:
+                    latest_logs = []
+                    all_logs = []
+                    
+                # Parse progress
+                progress = parse_training_progress(all_logs)
+                    
+                # Get latest samples
+                samples = []
+                samples_dir = lora_dir / "sample"
+                if samples_dir.exists():
+                    samples = sorted(
+                        [f for f in samples_dir.glob("*.png")],
+                        key=lambda x: x.stat().st_mtime,
+                        reverse=True
+                    )[:6]  # Latest 6 samples
+                    
+                # Format progress string
+                progress_str = ""
+                if progress["total_epochs"] > 0:
+                    progress_str = f"{progress['current_epoch']}/{progress['total_epochs']} epochs"
+                if progress["total_steps"] > 0:
+                    progress_str += f" ({progress['current_step']}/{progress['total_steps']} steps)"
+                if progress["loss"]:
+                    progress_str += f" - Loss: {progress['loss']:.4f}"
+                    
+                active_trainings.append({
+                    "id": training_dir.name.replace("training_", ""),
+                    "name": lora_dir.name,
+                    "status": "Active" if is_active else "Completed",
+                    "progress": progress_str,
+                    "log_file": str(log_file),
+                    "latest_logs": latest_logs,
+                    "latest_samples": [str(s) for s in samples],
+                    "started": datetime.fromtimestamp(training_dir.stat().st_ctime).strftime("%Y-%m-%d %H:%M:%S")
+                })
+            except Exception as e:
+                print(f"Error processing training directory {training_dir}: {str(e)}")
+                continue
+            
+    return active_trainings
+
+def monitor_training(training_id):
+    """Get latest logs and samples for a specific training"""
+    outputs_path = Path("outputs")
+    
+    # Find the training directory
+    training_dir = None
+    for lora_dir in outputs_path.iterdir():
+        if not lora_dir.is_dir():
+            continue
+        temp_dir = lora_dir / f"training_{training_id}"
+        if temp_dir.exists():
+            training_dir = temp_dir
+            break
+            
+    if not training_dir:
+        return None
+        
+    log_file = training_dir / "training.log"
+    if not log_file.exists():
+        return None
+        
+    # Get latest logs
+    with open(log_file, "r") as f:
+        logs = f.readlines()
+        
+    # Get latest samples
+    samples = []
+    samples_dir = training_dir.parent / "sample"
+    if samples_dir.exists():
+        samples = sorted(
+            [str(f) for f in samples_dir.glob("*.png")],
+            key=lambda x: os.path.getmtime(x),
+            reverse=True
+        )[:6]
+        
+    return {
+        "logs": logs,
+        "samples": samples
+    }
+
 if __name__ == "__main__":
     cwd = os.path.dirname(os.path.abspath(__file__))
     demo.launch(debug=True, show_error=True, allowed_paths=[cwd])

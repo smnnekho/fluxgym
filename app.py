@@ -21,6 +21,9 @@ from argparse import Namespace
 import train_network
 import toml
 import re
+from pathlib import Path
+import threading
+import queue
 MAX_IMAGES = 150
 
 with open('models.yaml', 'r') as file:
@@ -566,6 +569,76 @@ def get_samples(lora_name):
     except:
         return []
 
+def start_training_process(
+    base_model,
+    lora_name,
+    train_script,
+    train_config,
+    sample_prompts,
+):
+    # Create a unique training ID
+    training_id = str(uuid.uuid4())
+    output_name = slugify(lora_name)
+    
+    # Save the training script and config to files
+    training_dir = Path(f"outputs/{output_name}/training_{training_id}")
+    training_dir.mkdir(parents=True, exist_ok=True)
+    
+    script_path = training_dir / f"train.{'bat' if sys.platform == 'win32' else 'sh'}"
+    config_path = training_dir / "dataset.toml"
+    
+    with open(script_path, 'w', encoding="utf-8") as f:
+        f.write(train_script)
+    with open(config_path, 'w', encoding="utf-8") as f:
+        f.write(train_config)
+    
+    # Make script executable on Unix
+    if sys.platform != "win32":
+        script_path.chmod(script_path.stat().st_mode | 0o755)
+
+    # Create a log file
+    log_file = training_dir / "training.log"
+    
+    # Start the training process
+    if sys.platform == "win32":
+        process = subprocess.Popen(
+            str(script_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=dict(os.environ, PYTHONIOENCODING='utf-8', LOG_LEVEL='DEBUG')
+        )
+    else:
+        process = subprocess.Popen(
+            ["bash", str(script_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=dict(os.environ, PYTHONIOENCODING='utf-8', LOG_LEVEL='DEBUG')
+        )
+
+    # Create a thread to handle logging
+    def log_output():
+        with open(log_file, 'w', encoding='utf-8') as f:
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    f.write(output)
+                    f.flush()
+                    yield output.strip()
+        
+        rc = process.poll()
+        if rc == 0:
+            yield "Training completed successfully!"
+        else:
+            yield f"Training process exited with code {rc}"
+
+    return log_output(), log_file
+
 def start_training(
     base_model,
     lora_name,
@@ -573,71 +646,22 @@ def start_training(
     train_config,
     sample_prompts,
 ):
-    # write custom script and toml
-    if not os.path.exists("models"):
-        os.makedirs("models", exist_ok=True)
-    if not os.path.exists("outputs"):
-        os.makedirs("outputs", exist_ok=True)
-    output_name = slugify(lora_name)
-    output_dir = resolve_path_without_quotes(f"outputs/{output_name}")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-
-    download(base_model)
-
-    file_type = "sh"
-    if sys.platform == "win32":
-        file_type = "bat"
-
-    sh_filename = f"train.{file_type}"
-    sh_filepath = resolve_path_without_quotes(f"outputs/{output_name}/{sh_filename}")
-    with open(sh_filepath, 'w', encoding="utf-8") as file:
-        file.write(train_script)
-    gr.Info(f"Generated train script at {sh_filename}")
-
-
-    dataset_path = resolve_path_without_quotes(f"outputs/{output_name}/dataset.toml")
-    with open(dataset_path, 'w', encoding="utf-8") as file:
-        file.write(train_config)
-    gr.Info(f"Generated dataset.toml")
-
-    sample_prompts_path = resolve_path_without_quotes(f"outputs/{output_name}/sample_prompts.txt")
-    with open(sample_prompts_path, 'w', encoding='utf-8') as file:
-        file.write(sample_prompts)
-    gr.Info(f"Generated sample_prompts.txt")
-
-    # Train
-    if sys.platform == "win32":
-        command = sh_filepath
-    else:
-        command = f"bash \"{sh_filepath}\""
-
-    # Use Popen to run the command and capture output in real-time
-    env = os.environ.copy()
-    env['PYTHONIOENCODING'] = 'utf-8'
-    env['LOG_LEVEL'] = 'DEBUG'
-    runner = LogsViewRunner()
-    cwd = os.path.dirname(os.path.abspath(__file__))
-    gr.Info(f"Started training")
-    yield from runner.run_command([command], cwd=cwd)
-    yield runner.log(f"Runner: {runner}")
-
-    # Generate Readme
-    config = toml.loads(train_config)
-    concept_sentence = config['datasets'][0]['subsets'][0]['class_tokens']
-    print(f"concept_sentence={concept_sentence}")
-    print(f"lora_name {lora_name}, concept_sentence={concept_sentence}, output_name={output_name}")
-    sample_prompts_path = resolve_path_without_quotes(f"outputs/{output_name}/sample_prompts.txt")
-    with open(sample_prompts_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    sample_prompts = [line.strip() for line in lines if len(line.strip()) > 0 and line[0] != "#"]
-    md = readme(base_model, lora_name, concept_sentence, sample_prompts)
-    readme_path = resolve_path_without_quotes(f"outputs/{output_name}/README.md")
-    with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(md)
-
-    gr.Info(f"Training Complete. Check the outputs folder for the LoRA files.", duration=None)
-
+    try:
+        # Start the training process and get the log generator
+        log_generator, log_file = start_training_process(
+            base_model,
+            lora_name,
+            train_script,
+            train_config,
+            sample_prompts,
+        )
+        
+        # Yield logs to the UI
+        for log in log_generator:
+            yield log
+            
+    except Exception as e:
+        yield f"Error starting training: {str(e)}"
 
 def update(
     base_model,
@@ -1100,17 +1124,13 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
         outputs=[total_steps]
     )
     concept_sentence.change(fn=update_sample, inputs=[concept_sentence], outputs=sample_prompts)
-    start.click(fn=create_dataset, inputs=[dataset_folder, resolution, images] + caption_list, outputs=dataset_folder).then(
-        fn=start_training,
-        inputs=[
-            base_model,
-            lora_name,
-            train_script,
-            train_config,
-            sample_prompts,
-        ],
-        outputs=terminal,
-    )
+    start.click(fn=start_training, inputs=[
+        base_model,
+        lora_name,
+        train_script,
+        train_config,
+        sample_prompts,
+    ], outputs=terminal)
     do_captioning.click(fn=run_captioning, inputs=[images, concept_sentence] + caption_list, outputs=caption_list)
     demo.load(fn=loaded, js=js, outputs=[hf_token, hf_login, hf_logout, repo_owner])
     refresh.click(update, inputs=listeners, outputs=[train_script, train_config, dataset_folder])

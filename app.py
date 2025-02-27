@@ -832,12 +832,24 @@ nav img.rotate { animation: rotate 2s linear infinite; }
 .toast-wrap { bottom: var(--size-4) !important; top: auto !important; border: none !important; backdrop-filter: blur(10px); }
 .toast-title, .toast-text, .toast-icon, .toast-close { color: black !important; font-size: 14px; }
 .toast-body { border: none !important; }
-#terminal { box-shadow: none !important; margin-bottom: 25px; background: rgba(0,0,0,0.03); position: relative; }
+#terminal { 
+    box-shadow: none !important; 
+    margin-bottom: 25px; 
+    background: rgba(0,0,0,0.03); 
+    position: relative; 
+    border-radius: 8px; 
+    padding: 8px; 
+}
 #terminal .generating { border: none !important; }
 #terminal label { position: absolute !important; }
-#terminal .wrap { height: 400px !important; overflow-y: auto !important; }
-#terminal .cm-content { height: 380px !important; overflow-y: auto !important; }
-#terminal .cm-scroller { height: 380px !important; overflow-y: auto !important; }
+#terminal .cm-scroller { 
+    height: 400px !important; 
+    overflow-y: auto !important; 
+    border-radius: 4px; 
+    padding: 5px;
+}
+#terminal .cm-content { height: auto !important; overflow: visible !important; }
+#terminal .wrap { height: auto !important; overflow: visible !important; }
 .terminal-autoscroll-indicator { 
     position: absolute; 
     top: 10px; 
@@ -868,18 +880,25 @@ function() {
     setTimeout(() => {
         const terminalElement = document.querySelector("#terminal");
         if (terminalElement) {
-            // Find the actual content container within the terminal
-            const terminalContent = terminalElement.querySelector(".wrap");
-            if (terminalContent) {
-                // Create an indicator for autoscroll status
+            // Create an indicator for autoscroll status if it doesn't exist yet
+            if (!window.terminalScrollIndicator) {
                 const indicator = document.createElement("div");
                 indicator.className = "terminal-autoscroll-indicator";
                 indicator.textContent = "Autoscroll: ON";
-                terminalElement.style.position = "relative";
                 terminalElement.appendChild(indicator);
                 
                 // Store the indicator for later use
                 window.terminalScrollIndicator = indicator;
+                
+                // Add click event to the indicator to toggle autoscroll
+                indicator.addEventListener("click", (e) => {
+                    autoscroll.classList.toggle("on");
+                    if (autoscroll.classList.contains("on")) {
+                        indicator.textContent = "Autoscroll: ON";
+                    } else {
+                        indicator.textContent = "Autoscroll: OFF";
+                    }
+                });
             }
         }
     }, 1000);
@@ -887,18 +906,14 @@ function() {
     window.iidxx = window.setInterval(function() {
         let text = document.querySelector(".codemirror-wrapper .cm-line")?.innerText.trim() || "";
         let img = document.querySelector("#logo")
-        let terminalContent = document.querySelector("#terminal .cm-scroller");
-        let terminalContent2 = document.querySelector("#terminal .cm-content");
+        let terminalScroller = document.querySelector("#terminal .cm-scroller");
         
         if (text.length > 0) {
             autoscroll.classList.remove("hidden")
             if (autoscroll.classList.contains("on")) {
                 autoscroll.textContent = "Autoscroll ON"
-                if (terminalContent) {
-                    terminalContent.scrollTop = terminalContent.scrollHeight;
-                }
-                if (terminalContent2) {
-                    terminalContent2.scrollTop = terminalContent2.scrollHeight;
+                if (terminalScroller) {
+                    terminalScroller.scrollTop = terminalScroller.scrollHeight;
                 }
                 if (window.terminalScrollIndicator) {
                     window.terminalScrollIndicator.textContent = "Autoscroll: ON";
@@ -1055,7 +1070,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                         batch_size = gr.Number(label="batch_size", info="Batch Size", value=1, minimum=1, step=1, interactive=True)
                     advanced_components, advanced_component_ids = init_advanced()
             with gr.Row():
-                terminal = LogsView(label="Train log", elem_id="terminal")
+                terminal = LogsView(label="Train log", elem_id="terminal", height=400)
             with gr.Row():
                 gallery = gr.Gallery(get_samples, inputs=[lora_name], label="Samples", every=10, columns=6)
 

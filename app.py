@@ -1070,7 +1070,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                         batch_size = gr.Number(label="batch_size", info="Batch Size", value=1, minimum=1, step=1, interactive=True)
                     advanced_components, advanced_component_ids = init_advanced()
             with gr.Row():
-                terminal = LogsView(label="Train log", elem_id="terminal", height=400)
+                terminal = LogsView(label="Train log", elem_id="terminal")
             with gr.Row():
                 gallery = gr.Gallery(get_samples, inputs=[lora_name], label="Samples", every=10, columns=6)
 

@@ -832,9 +832,24 @@ nav img.rotate { animation: rotate 2s linear infinite; }
 .toast-wrap { bottom: var(--size-4) !important; top: auto !important; border: none !important; backdrop-filter: blur(10px); }
 .toast-title, .toast-text, .toast-icon, .toast-close { color: black !important; font-size: 14px; }
 .toast-body { border: none !important; }
-#terminal { box-shadow: none !important; margin-bottom: 25px; background: rgba(0,0,0,0.03); }
+#terminal { box-shadow: none !important; margin-bottom: 25px; background: rgba(0,0,0,0.03); position: relative; }
 #terminal .generating { border: none !important; }
 #terminal label { position: absolute !important; }
+#terminal .wrap { height: 400px !important; overflow-y: auto !important; }
+#terminal .cm-content { height: 380px !important; overflow-y: auto !important; }
+#terminal .cm-scroller { height: 380px !important; overflow-y: auto !important; }
+.terminal-autoscroll-indicator { 
+    position: absolute; 
+    top: 10px; 
+    right: 10px; 
+    z-index: 100; 
+    font-size: 12px; 
+    background-color: rgba(255,255,255,0.8);
+    color: #333;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+}
 .tabs { margin-top: 50px; }
 .hidden { display: none !important; }
 .codemirror-wrapper .cm-line { font-size: 12px !important; }
@@ -848,25 +863,62 @@ function() {
     if (window.iidxx) {
         window.clearInterval(window.iidxx);
     }
+    
+    // Add a wrapper to the terminal after it's loaded
+    setTimeout(() => {
+        const terminalElement = document.querySelector("#terminal");
+        if (terminalElement) {
+            // Find the actual content container within the terminal
+            const terminalContent = terminalElement.querySelector(".wrap");
+            if (terminalContent) {
+                // Create an indicator for autoscroll status
+                const indicator = document.createElement("div");
+                indicator.className = "terminal-autoscroll-indicator";
+                indicator.textContent = "Autoscroll: ON";
+                terminalElement.style.position = "relative";
+                terminalElement.appendChild(indicator);
+                
+                // Store the indicator for later use
+                window.terminalScrollIndicator = indicator;
+            }
+        }
+    }, 1000);
+    
     window.iidxx = window.setInterval(function() {
-        let text=document.querySelector(".codemirror-wrapper .cm-line").innerText.trim()
+        let text = document.querySelector(".codemirror-wrapper .cm-line")?.innerText.trim() || "";
         let img = document.querySelector("#logo")
+        let terminalContent = document.querySelector("#terminal .cm-scroller");
+        let terminalContent2 = document.querySelector("#terminal .cm-content");
+        
         if (text.length > 0) {
             autoscroll.classList.remove("hidden")
             if (autoscroll.classList.contains("on")) {
                 autoscroll.textContent = "Autoscroll ON"
-                window.scrollTo(0, document.body.scrollHeight, { behavior: "smooth" });
+                if (terminalContent) {
+                    terminalContent.scrollTop = terminalContent.scrollHeight;
+                }
+                if (terminalContent2) {
+                    terminalContent2.scrollTop = terminalContent2.scrollHeight;
+                }
+                if (window.terminalScrollIndicator) {
+                    window.terminalScrollIndicator.textContent = "Autoscroll: ON";
+                }
                 img.classList.add("rotate")
             } else {
                 autoscroll.textContent = "Autoscroll OFF"
+                if (window.terminalScrollIndicator) {
+                    window.terminalScrollIndicator.textContent = "Autoscroll: OFF";
+                }
                 img.classList.remove("rotate")
             }
         }
     }, 500);
+    
     console.log("autoscroll", autoscroll)
     autoscroll.addEventListener("click", (e) => {
         autoscroll.classList.toggle("on")
     })
+    
     function debounce(fn, delay) {
         let timeoutId;
         return function(...args) {
@@ -886,7 +938,6 @@ function() {
       e.target.classList.add("clicked")
       e.target.innerHTML = "Training..."
     })
-
 }
 """
 

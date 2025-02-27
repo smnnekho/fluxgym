@@ -515,7 +515,8 @@ def gen_toml(
   dataset_folder,
   resolution,
   class_tokens,
-  num_repeats
+  num_repeats,
+  batch_size
 ):
     toml = f"""[general]
 shuffle_caption = false
@@ -524,7 +525,7 @@ keep_tokens = 1
 
 [[datasets]]
 resolution = {resolution}
-batch_size = 1
+batch_size = {batch_size}
 keep_tokens = 1
 
   [[datasets.subsets]]
@@ -656,6 +657,7 @@ def update(
     num_repeats,
     sample_prompts,
     sample_every_n_steps,
+    batch_size,
     *advanced_components,
 ):
     output_name = slugify(lora_name)
@@ -681,7 +683,8 @@ def update(
         dataset_folder,
         resolution,
         class_tokens,
-        num_repeats
+        num_repeats,
+        batch_size
     )
     return gr.update(value=sh), gr.update(value=toml), dataset_folder
 
@@ -997,6 +1000,8 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                         timestep_sampling = gr.Textbox(label="--timestep_sampling", info="Timestep Sampling", value="shift", interactive=True)
                     with gr.Column(min_width=300):
                         network_dim = gr.Number(label="--network_dim", info="LoRA Rank", value=4, minimum=4, maximum=128, step=4, interactive=True)
+                    with gr.Column(min_width=300):
+                        batch_size = gr.Number(label="batch_size", info="Batch Size", value=1, minimum=1, step=1, interactive=True)
                     advanced_components, advanced_component_ids = init_advanced()
             with gr.Row():
                 terminal = LogsView(label="Train log", elem_id="terminal")
@@ -1056,6 +1061,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
         num_repeats,
         sample_prompts,
         sample_every_n_steps,
+        batch_size,
         *advanced_components
     ]
     advanced_component_ids = [x.elem_id for x in advanced_components]

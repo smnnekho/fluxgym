@@ -21,6 +21,7 @@ from argparse import Namespace
 import train_network
 import toml
 import re
+import time
 MAX_IMAGES = 150
 
 with open('models.yaml', 'r') as file:
@@ -543,6 +544,137 @@ def update_total_steps(max_train_epochs, num_repeats, images):
     except:
         print("")
 
+# Training metrics tracking
+training_metrics = {
+    "is_training": False,
+    "active_model": "",
+    "start_time": None,
+    "current_epoch": 0,
+    "total_epochs": 0,
+    "current_step": 0,
+    "total_steps": 0,
+    "loss_values": [],
+    "lr_values": [],
+    "latest_logs": [],
+    "latest_samples": []
+}
+
+def parse_training_logs(log_line):
+    """Parse training logs to extract metrics."""
+    global training_metrics
+    
+    # Add timestamp and add to latest logs (keep last 15 lines)
+    timestamp = time.strftime("%H:%M:%S", time.localtime())
+    log_with_timestamp = f"[{timestamp}] {log_line}"
+    training_metrics["latest_logs"].append(log_with_timestamp)
+    if len(training_metrics["latest_logs"]) > 15:
+        training_metrics["latest_logs"] = training_metrics["latest_logs"][-15:]
+    
+    # Extract epoch information
+    epoch_match = re.search(r"Epoch (\d+)/(\d+)", log_line)
+    if epoch_match:
+        training_metrics["current_epoch"] = int(epoch_match.group(1))
+        training_metrics["total_epochs"] = int(epoch_match.group(2))
+    
+    # Extract step information
+    step_match = re.search(r"Step (\d+)/(\d+)", log_line)
+    if step_match:
+        training_metrics["current_step"] = int(step_match.group(1))
+        training_metrics["total_steps"] = int(step_match.group(2))
+    
+    # Extract loss information
+    loss_match = re.search(r"loss: ([0-9.]+)", log_line)
+    if loss_match and training_metrics["current_step"] > 0:
+        loss_value = float(loss_match.group(1))
+        training_metrics["loss_values"].append({
+            "step": training_metrics["current_step"], 
+            "loss": loss_value
+        })
+    
+    # Extract learning rate information
+    lr_match = re.search(r"lr: ([0-9.e\-]+)", log_line)
+    if lr_match and training_metrics["current_step"] > 0:
+        lr_value = float(lr_match.group(1))
+        training_metrics["lr_values"].append({
+            "step": training_metrics["current_step"], 
+            "lr": lr_value
+        })
+    
+    # Extract sample generation information
+    sample_match = re.search(r"Generating samples .*?saved to (.*?)$", log_line)
+    if sample_match:
+        sample_path = sample_match.group(1)
+        if os.path.exists(sample_path):
+            training_metrics["latest_samples"].append(sample_path)
+            # Keep only latest 6 samples
+            if len(training_metrics["latest_samples"]) > 6:
+                training_metrics["latest_samples"] = training_metrics["latest_samples"][-6:]
+
+def get_training_status():
+    """Get current training status for monitoring tab."""
+    global training_metrics
+    
+    status_class = ""
+    
+    if not training_metrics["is_training"]:
+        status = "Idle"
+        status_class = ""
+        return {
+            "active_model": "No active training",
+            "training_status": f"{status} {status_class}",
+            "elapsed_time": "00:00:00",
+            "current_epoch": 0,
+            "current_step": 0,
+            "total_steps": 0,
+            "loss_chart": [],
+            "lr_chart": [],
+            "monitoring_logs": "\n".join(training_metrics["latest_logs"]),
+            "live_samples": []
+        }
+    
+    # Calculate elapsed time
+    elapsed = time.time() - training_metrics["start_time"]
+    hours, remainder = divmod(int(elapsed), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    elapsed_time = f"{hours:02}:{minutes:02}:{seconds:02}"
+    
+    # Determine training status
+    if training_metrics["current_epoch"] >= training_metrics["total_epochs"]:
+        status = "Completed"
+        status_class = "completed"
+    else:
+        status = "Training"
+        status_class = "training"
+    
+    return {
+        "active_model": training_metrics["active_model"],
+        "training_status": f"{status} {status_class}",
+        "elapsed_time": elapsed_time,
+        "current_epoch": training_metrics["current_epoch"],
+        "current_step": training_metrics["current_step"],
+        "total_steps": training_metrics["total_steps"],
+        "loss_chart": training_metrics["loss_values"],
+        "lr_chart": training_metrics["lr_values"],
+        "monitoring_logs": "\n".join(training_metrics["latest_logs"]),
+        "live_samples": training_metrics["latest_samples"]
+    }
+
+def update_monitoring():
+    """Update monitoring tab with current training metrics."""
+    status = get_training_status()
+    return [
+        gr.update(value=status["active_model"]),
+        gr.update(value=status["training_status"]),
+        gr.update(value=status["elapsed_time"]),
+        gr.update(value=status["current_epoch"]),
+        gr.update(value=status["current_step"]),
+        gr.update(value=status["total_steps"]),
+        status["loss_chart"],
+        status["lr_chart"],
+        gr.update(value=status["monitoring_logs"]),
+        status["live_samples"]
+    ]
+
 def set_repo(lora_rows):
     selected_name = os.path.basename(lora_rows)
     return gr.update(value=selected_name)
@@ -574,6 +706,22 @@ def start_training(
     train_config,
     sample_prompts,
 ):
+    # Reset training metrics
+    global training_metrics
+    training_metrics = {
+        "is_training": True,
+        "active_model": lora_name,
+        "start_time": time.time(),
+        "current_epoch": 0,
+        "total_epochs": 0,
+        "current_step": 0,
+        "total_steps": 0,
+        "loss_values": [],
+        "lr_values": [],
+        "latest_logs": [],
+        "latest_samples": []
+    }
+
     # write custom script and toml
     if not os.path.exists("models"):
         os.makedirs("models", exist_ok=True)
@@ -619,9 +767,31 @@ def start_training(
     env['LOG_LEVEL'] = 'DEBUG'
     runner = LogsViewRunner()
     cwd = os.path.dirname(os.path.abspath(__file__))
-    gr.Info(f"Started training")
-    yield from runner.run_command([command], cwd=cwd)
+    gr.Info(f"Started training - Check the Monitoring tab for real-time stats")
+    
+    # Switch to monitoring tab using javascript
+    js_to_switch = """
+    setTimeout(() => {
+        document.querySelector('button[id*="tab_Monitoring"]').click();
+    }, 1000);
+    """
+    gr.Javascript(value=js_to_switch)
+    
+    # Extract max_train_epochs for monitoring
+    config = toml.loads(train_config)
+    max_train_epochs_match = re.search(r"--max_train_epochs\s+(\d+)", train_script)
+    if max_train_epochs_match:
+        training_metrics["total_epochs"] = int(max_train_epochs_match.group(1))
+    
+    # Run the command and process logs
+    for log_line in runner.run_command([command], cwd=cwd):
+        parse_training_logs(log_line)
+        yield log_line
+    
     yield runner.log(f"Runner: {runner}")
+    
+    # Mark training as complete
+    training_metrics["is_training"] = False
 
     # Generate Readme
     config = toml.loads(train_config)
@@ -867,6 +1037,67 @@ nav img.rotate { animation: rotate 2s linear infinite; }
 .codemirror-wrapper .cm-line { font-size: 12px !important; }
 label { font-weight: bold !important; }
 #start_training.clicked { background: silver; color: black; }
+
+/* Monitoring styles */
+.monitoring-card {
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 15px;
+    background: white;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    margin-bottom: 15px;
+}
+.monitoring-card h3 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-size: 18px;
+    color: #333;
+}
+.monitoring-status {
+    font-weight: bold;
+    color: #1e88e5;
+}
+.monitoring-status.training {
+    color: #43a047;
+}
+.monitoring-status.completed {
+    color: #1e88e5;
+}
+.monitoring-status.error {
+    color: #e53935;
+}
+.monitoring-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+}
+.monitoring-stat-item {
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 4px;
+    text-align: center;
+}
+.monitoring-stat-value {
+    font-size: 24px;
+    font-weight: bold;
+}
+.monitoring-stat-label {
+    font-size: 12px;
+    color: #666;
+}
+.monitoring-refresh {
+    margin-top: 15px;
+    padding: 10px 20px;
+    border-radius: 4px;
+    background: #1e88e5;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+}
+.monitoring-refresh:hover {
+    background: #1976d2;
+}
 """
 
 js = """
@@ -953,6 +1184,52 @@ function() {
       e.target.classList.add("clicked")
       e.target.innerHTML = "Training..."
     })
+    
+    // Auto-refresh monitoring
+    if (window.monitoringTimer) {
+        clearInterval(window.monitoringTimer);
+    }
+    
+    function setupMonitoringRefresh() {
+        const refreshButton = document.querySelector("#refresh_monitoring");
+        const autoRefreshCheckbox = document.querySelector('input[aria-label="Auto-refresh monitoring tab"]');
+        const intervalInput = document.querySelector('input[aria-label="Auto-refresh interval (seconds)"]');
+        
+        if (!refreshButton || !autoRefreshCheckbox || !intervalInput) {
+            setTimeout(setupMonitoringRefresh, 1000);
+            return;
+        }
+        
+        function refreshMonitoring() {
+            if (autoRefreshCheckbox.checked) {
+                refreshButton.click();
+            }
+        }
+        
+        // Initial refresh
+        refreshMonitoring();
+        
+        // Setup interval for auto-refresh
+        window.monitoringTimer = setInterval(() => {
+            refreshMonitoring();
+        }, parseInt(intervalInput.value, 10) * 1000);
+        
+        // Update interval when value changes
+        intervalInput.addEventListener('change', () => {
+            clearInterval(window.monitoringTimer);
+            window.monitoringTimer = setInterval(() => {
+                refreshMonitoring();
+            }, parseInt(intervalInput.value, 10) * 1000);
+        });
+        
+        autoRefreshCheckbox.addEventListener('change', () => {
+            if (autoRefreshCheckbox.checked) {
+                refreshMonitoring();
+            }
+        });
+    }
+    
+    setupMonitoringRefresh();
 }
 """
 
@@ -961,7 +1238,8 @@ print(f"current_account={current_account}")
 
 with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
     with gr.Tabs() as tabs:
-        with gr.TabItem("Gym"):
+        gym_tab = gr.TabItem("Gym")
+        with gym_tab:
             output_components = []
             with gr.Row():
                 gr.HTML("""<nav>
@@ -1074,7 +1352,75 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
             with gr.Row():
                 gallery = gr.Gallery(get_samples, inputs=[lora_name], label="Samples", every=10, columns=6)
 
-        with gr.TabItem("Publish") as publish_tab:
+        monitoring_tab = gr.TabItem("Monitoring")
+        with monitoring_tab:
+            gr.Markdown(
+                """# Training Monitoring
+<p style="margin-top:0">Track your model training progress and metrics.</p>
+""", elem_classes="group_padding")
+            with gr.Row():
+                with gr.Column():
+                    with gr.Box(elem_classes="monitoring-card"):
+                        active_model = gr.Textbox(label="Active Model", interactive=False)
+                        training_status = gr.Textbox(label="Training Status", interactive=False, elem_classes="monitoring-status")
+                        elapsed_time = gr.Textbox(label="Elapsed Time", interactive=False)
+                with gr.Column():
+                    with gr.Box(elem_classes="monitoring-card"):
+                        current_epoch = gr.Number(label="Current Epoch", interactive=False)
+                        current_step = gr.Number(label="Current Step", interactive=False)
+                        total_steps = gr.Number(label="Total Steps", interactive=False)
+            
+            with gr.Row():
+                with gr.Column():
+                    with gr.Box(elem_classes="monitoring-card"):
+                        loss_chart = gr.LinePlot(
+                            label="Training Loss", 
+                            x="step", 
+                            y="loss",
+                            title="Training Loss",
+                            x_title="Steps",
+                            y_title="Loss",
+                            height=400
+                        )
+                with gr.Column():
+                    with gr.Box(elem_classes="monitoring-card"):
+                        lr_chart = gr.LinePlot(
+                            label="Learning Rate", 
+                            x="step", 
+                            y="lr",
+                            title="Learning Rate",
+                            x_title="Steps",
+                            y_title="LR",
+                            height=400
+                        )
+            
+            with gr.Row():
+                with gr.Box(elem_classes="monitoring-card", width="100%"):
+                    gr.Markdown("### Training Logs")
+                    monitoring_logs = gr.Textbox(
+                        label="Processed Training Logs", 
+                        max_lines=15,
+                        interactive=False,
+                        show_copy_button=True
+                    )
+            
+            with gr.Row():
+                with gr.Box(elem_classes="monitoring-card", width="100%"):
+                    gr.Markdown("### Latest Generated Samples")
+                    live_samples = gr.Gallery(label="", columns=3, height=300)
+                    
+            with gr.Row():
+                refresh_monitoring = gr.Button("Refresh Monitoring", elem_id="refresh_monitoring", variant="primary")
+                
+            # Auto-update monitoring tab
+            with gr.Row():
+                with gr.Column(scale=3):
+                    monitoring_interval = gr.Number(value=5, label="Auto-refresh interval (seconds)", minimum=1, maximum=60, step=1)
+                with gr.Column(scale=1):
+                    auto_refresh = gr.Checkbox(label="Auto-refresh monitoring tab", value=True)
+
+        publish_tab = gr.TabItem("Publish")
+        with publish_tab:
             hf_token = gr.Textbox(label="Huggingface Token")
             hf_login = gr.Button("Login")
             hf_logout = gr.Button("Logout")
@@ -1184,6 +1530,40 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
         outputs=terminal,
     )
     do_captioning.click(fn=run_captioning, inputs=[images, concept_sentence] + caption_list, outputs=caption_list)
+    
+    # Monitoring tab events
+    refresh_monitoring.click(
+        fn=update_monitoring,
+        outputs=[
+            active_model,
+            training_status,
+            elapsed_time,
+            current_epoch,
+            current_step,
+            total_steps,
+            loss_chart,
+            lr_chart,
+            monitoring_logs,
+            live_samples
+        ]
+    )
+    
+    monitoring_tab.select(
+        fn=update_monitoring,
+        outputs=[
+            active_model,
+            training_status,
+            elapsed_time,
+            current_epoch,
+            current_step,
+            total_steps,
+            loss_chart,
+            lr_chart,
+            monitoring_logs,
+            live_samples
+        ]
+    )
+    
     demo.load(fn=loaded, js=js, outputs=[hf_token, hf_login, hf_logout, repo_owner])
     refresh.click(update, inputs=listeners, outputs=[train_script, train_config, dataset_folder])
 if __name__ == "__main__":

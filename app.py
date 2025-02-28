@@ -1360,19 +1360,19 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
 """, elem_classes="group_padding")
             with gr.Row():
                 with gr.Column():
-                    with gr.Box(elem_classes="monitoring-card"):
+                    with gr.Column(elem_classes="monitoring-card"):
                         active_model = gr.Textbox(label="Active Model", interactive=False)
                         training_status = gr.Textbox(label="Training Status", interactive=False, elem_classes="monitoring-status")
                         elapsed_time = gr.Textbox(label="Elapsed Time", interactive=False)
                 with gr.Column():
-                    with gr.Box(elem_classes="monitoring-card"):
+                    with gr.Column(elem_classes="monitoring-card"):
                         current_epoch = gr.Number(label="Current Epoch", interactive=False)
                         current_step = gr.Number(label="Current Step", interactive=False)
                         total_steps = gr.Number(label="Total Steps", interactive=False)
             
             with gr.Row():
                 with gr.Column():
-                    with gr.Box(elem_classes="monitoring-card"):
+                    with gr.Column(elem_classes="monitoring-card"):
                         loss_chart = gr.LinePlot(
                             label="Training Loss", 
                             x="step", 
@@ -1383,7 +1383,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                             height=400
                         )
                 with gr.Column():
-                    with gr.Box(elem_classes="monitoring-card"):
+                    with gr.Column(elem_classes="monitoring-card"):
                         lr_chart = gr.LinePlot(
                             label="Learning Rate", 
                             x="step", 
@@ -1395,7 +1395,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                         )
             
             with gr.Row():
-                with gr.Box(elem_classes="monitoring-card", width="100%"):
+                with gr.Column(elem_classes="monitoring-card", width="100%"):
                     gr.Markdown("### Training Logs")
                     monitoring_logs = gr.Textbox(
                         label="Processed Training Logs", 
@@ -1405,7 +1405,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                     )
             
             with gr.Row():
-                with gr.Box(elem_classes="monitoring-card", width="100%"):
+                with gr.Column(elem_classes="monitoring-card", width="100%"):
                     gr.Markdown("### Latest Generated Samples")
                     live_samples = gr.Gallery(label="", columns=3, height=300)
                     
